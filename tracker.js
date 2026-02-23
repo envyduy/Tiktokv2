@@ -50,10 +50,10 @@ async function scrapeUser(username) {
 
   try {
 
-   const result = await execPromise(
-  `yt-dlp --playlist-end ${MAX_VIDEOS} --dump-json ${profileUrl}`,
-  { maxBuffer: 1024 * 1024 * 200 }
-);
+    const result = await execPromise(
+      `yt-dlp --playlist-end ${MAX_VIDEOS} --dump-json ${profileUrl}`,
+      { maxBuffer: 1024 * 1024 * 200 }
+    );
 
     stdout = result.stdout;
 
@@ -97,6 +97,9 @@ async function scrapeUser(username) {
 
     if (!video.id) continue;
 
+    // LINK VIDEO
+    const videoUrl = video.webpage_url || `https://www.tiktok.com/@${username}/video/${video.id}`;
+
     const videoRef = db
       .collection("koc_users")
       .doc(username)
@@ -104,12 +107,23 @@ async function scrapeUser(username) {
       .doc(video.id);
 
     batch.set(videoRef, {
+
       id: video.id,
+
+      url: videoUrl, // <-- thêm link video ở đây
+
       desc: video.description || "",
+
       create_time: video.timestamp || null,
+
       thumbnail: video.thumbnail || "",
+
       uploader: username,
+
+      username: username,
+
       last_updated: now
+
     }, { merge: true });
 
     const snapshotRef = videoRef
@@ -119,8 +133,17 @@ async function scrapeUser(username) {
       .doc(hourKey);
 
     batch.set(snapshotRef, {
+
       view_count: video.view_count || 0,
+
+      like_count: video.like_count || 0,
+
+      comment_count: video.comment_count || 0,
+
+      repost_count: video.repost_count || 0,
+
       timestamp: now
+
     });
 
   }
@@ -141,7 +164,7 @@ async function runTracker() {
 
     await scrapeUser(userDoc.id);
 
-    await sleep(5000); // chống block
+    await sleep(5000);
 
   }
 
