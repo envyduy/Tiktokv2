@@ -5,6 +5,10 @@ const express = require("express");
 
 const execPromise = util.promisify(exec);
 
+// ============================
+// FIREBASE INIT
+// ============================
+
 const serviceAccount = JSON.parse(
   process.env.FIREBASE_SERVICE_ACCOUNT
 );
@@ -16,9 +20,14 @@ admin.initializeApp({
 const db = admin.firestore();
 const FieldValue = admin.firestore.FieldValue;
 
+
+// ============================
+// CONFIG
+// ============================
+
 const MAX_VIDEOS = 120;
 const PORT = process.env.PORT || 10000;
-const SECRET_KEY = process.env.SECRET_KEY; // dùng biến môi trường
+const SECRET_KEY = process.env.SECRET_KEY;
 
 const app = express();
 
@@ -32,15 +41,17 @@ app.listen(PORT, () => {
 
 
 // ============================
-// TIME
+// TIME (Vietnam)
 // ============================
 
 function getVietnamTime() {
+
   return new Date(
     new Date().toLocaleString("en-US", {
       timeZone: "Asia/Ho_Chi_Minh"
     })
   );
+
 }
 
 
@@ -86,8 +97,9 @@ async function scrapeUser(username) {
   const lines = stdout.trim().split("\n");
 
   const now = getVietnamTime();
+
   const dateKey = now.toISOString().split("T")[0];
-  const hourKey = now.getHours().toString();
+  const hourKey = now.getHours().toString().padStart(2, "0");
 
   let batch = db.batch();
   let operationCount = 0;
@@ -116,18 +128,45 @@ async function scrapeUser(username) {
       .collection("videos")
       .doc(video.id);
 
+
+    // ============================
+    // SAVE VIDEO (FIX QUAN TRỌNG)
+    // ============================
+
     batch.set(videoRef, {
+
       id: video.id,
+
       url: videoUrl,
+
       desc: video.description || "",
+
       create_time: video.timestamp || null,
+
       thumbnail: video.thumbnail || "",
+
       uploader: username,
+
       username: username,
+
+
+      // ⭐⭐⭐ FIX CHÍNH
+      last_view_count: video.view_count || 0,
+      last_like_count: video.like_count || 0,
+      last_comment_count: video.comment_count || 0,
+      last_repost_count: video.repost_count || 0,
+
+
       last_updated: FieldValue.serverTimestamp()
+
     }, { merge: true });
 
     operationCount++;
+
+
+    // ============================
+    // SAVE HOURLY SNAPSHOT
+    // ============================
 
     const snapshotRef = videoRef
       .collection("daily")
@@ -136,30 +175,49 @@ async function scrapeUser(username) {
       .doc(hourKey);
 
     batch.set(snapshotRef, {
+
       view_count: video.view_count || 0,
+
       like_count: video.like_count || 0,
+
       comment_count: video.comment_count || 0,
+
       repost_count: video.repost_count || 0,
+
       timestamp: FieldValue.serverTimestamp()
+
     });
 
     operationCount++;
 
+
+    // ============================
+    // COMMIT BATCH
+    // ============================
+
     if (operationCount >= 400) {
+
       await batch.commit();
+
       batch = db.batch();
+
       operationCount = 0;
+
     }
 
   }
 
+
   if (operationCount > 0) {
+
     await batch.commit();
+
   }
 
   console.log("Saved videos for", username);
 
 }
+
 
 
 // ============================
@@ -185,6 +243,7 @@ async function runTracker() {
 }
 
 
+
 // ============================
 // MANUAL TRIGGER API
 // ============================
@@ -193,20 +252,22 @@ let isRunning = false;
 
 app.get("/run-tracker", async (req, res) => {
 
-  // 🔐 check key
   if (req.query.key !== SECRET_KEY) {
+
     return res.status(403).json({
       success: false,
       message: "Unauthorized"
     });
+
   }
 
-  // 🚫 chống spam
   if (isRunning) {
+
     return res.json({
       success: false,
       message: "Tracker already running"
     });
+
   }
 
   isRunning = true;
