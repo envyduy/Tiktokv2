@@ -29,6 +29,10 @@ const MAX_VIDEOS = 120;
 const PORT = process.env.PORT || 10000;
 const SECRET_KEY = process.env.SECRET_KEY;
 
+const RETRY_COUNT = 3;
+const RETRY_DELAY = 8000;
+const USER_DELAY = 8000;
+
 const app = express();
 
 app.get("/", (req, res) => {
@@ -41,17 +45,15 @@ app.listen(PORT, () => {
 
 
 // ============================
-// TIME (Vietnam)
+// TIME
 // ============================
 
 function getVietnamTime() {
-
   return new Date(
     new Date().toLocaleString("en-US", {
       timeZone: "Asia/Ho_Chi_Minh"
     })
   );
-
 }
 
 
@@ -65,159 +67,190 @@ function sleep(ms) {
 
 
 // ============================
+// EXEC WITH TIMEOUT + RETRY
+// ============================
+
+async function execYtDlp(profileUrl, retry = RETRY_COUNT) {
+
+  try {
+
+    console.log("Running yt-dlp:", profileUrl);
+
+    const result = await execPromise(
+      `yt-dlp --quiet --no-warnings --playlist-end ${MAX_VIDEOS} --dump-json ${profileUrl}`,
+      {
+        maxBuffer: 1024 * 1024 * 200,
+        timeout: 1000 * 60 * 3
+      }
+    );
+
+    if (!result.stdout || result.stdout.trim() === "") {
+      throw new Error("Empty stdout");
+    }
+
+    return result.stdout;
+
+  } catch (error) {
+
+    console.log("yt-dlp error:", error.message);
+
+    if (retry > 0) {
+
+      console.log("Retrying in", RETRY_DELAY / 1000, "seconds...");
+
+      await sleep(RETRY_DELAY);
+
+      return execYtDlp(profileUrl, retry - 1);
+
+    }
+
+    console.log("yt-dlp failed completely");
+
+    return null;
+
+  }
+
+}
+
+
+// ============================
 // SCRAPE USER
 // ============================
 
 async function scrapeUser(username) {
 
-  console.log("Scraping:", username);
-
-  const profileUrl = `https://www.tiktok.com/@${username}`;
-
-  let stdout;
-
   try {
 
-    const result = await execPromise(
-      `yt-dlp --playlist-end ${MAX_VIDEOS} --dump-json ${profileUrl}`,
-      { maxBuffer: 1024 * 1024 * 200 }
-    );
+    console.log("Scraping:", username);
 
-    stdout = result.stdout;
+    const profileUrl = `https://www.tiktok.com/@${username}`;
+
+    const stdout = await execYtDlp(profileUrl);
+
+    if (!stdout) {
+
+      console.log("No data:", username);
+
+      return;
+
+    }
+
+    const lines = stdout.trim().split("\n");
+
+    const now = getVietnamTime();
+
+    const dateKey = now.toISOString().split("T")[0];
+    const hourKey = now.getHours().toString().padStart(2, "0");
+
+    let batch = db.batch();
+    let operationCount = 0;
+
+    for (const line of lines) {
+
+      if (!line) continue;
+
+      let video;
+
+      try {
+        video = JSON.parse(line);
+      } catch {
+        continue;
+      }
+
+      if (!video.id) continue;
+
+      const videoUrl =
+        video.webpage_url ||
+        `https://www.tiktok.com/@${username}/video/${video.id}`;
+
+      const videoRef = db
+        .collection("koc_users")
+        .doc(username)
+        .collection("videos")
+        .doc(video.id);
+
+
+      // SAVE VIDEO
+
+      batch.set(videoRef, {
+
+        id: video.id,
+
+        url: videoUrl,
+
+        desc: video.description || "",
+
+        create_time: video.timestamp || null,
+
+        thumbnail: video.thumbnail || "",
+
+        username: username,
+
+        last_view_count: video.view_count || 0,
+
+        last_like_count: video.like_count || 0,
+
+        last_comment_count: video.comment_count || 0,
+
+        last_repost_count: video.repost_count || 0,
+
+        last_updated: FieldValue.serverTimestamp()
+
+      }, { merge: true });
+
+      operationCount++;
+
+
+      // SAVE HOURLY SNAPSHOT
+
+      const snapshotRef = videoRef
+        .collection("daily")
+        .doc(dateKey)
+        .collection("hours")
+        .doc(hourKey);
+
+      batch.set(snapshotRef, {
+
+        view_count: video.view_count || 0,
+
+        like_count: video.like_count || 0,
+
+        comment_count: video.comment_count || 0,
+
+        repost_count: video.repost_count || 0,
+
+        timestamp: FieldValue.serverTimestamp()
+
+      });
+
+      operationCount++;
+
+
+      if (operationCount >= 400) {
+
+        await batch.commit();
+
+        batch = db.batch();
+
+        operationCount = 0;
+
+      }
+
+    }
+
+    if (operationCount > 0) {
+      await batch.commit();
+    }
+
+    console.log("SUCCESS:", username);
 
   } catch (error) {
 
-    console.log("Scrape failed:", error.message);
-    return;
+    console.log("Scrape error:", username, error.message);
 
   }
-
-  if (!stdout) return;
-
-  const lines = stdout.trim().split("\n");
-
-  const now = getVietnamTime();
-
-  const dateKey = now.toISOString().split("T")[0];
-  const hourKey = now.getHours().toString().padStart(2, "0");
-
-  let batch = db.batch();
-  let operationCount = 0;
-
-  for (const line of lines) {
-
-    if (!line) continue;
-
-    let video;
-
-    try {
-      video = JSON.parse(line);
-    } catch {
-      continue;
-    }
-
-    if (!video.id) continue;
-
-    const videoUrl =
-      video.webpage_url ||
-      `https://www.tiktok.com/@${username}/video/${video.id}`;
-
-    const videoRef = db
-      .collection("koc_users")
-      .doc(username)
-      .collection("videos")
-      .doc(video.id);
-
-
-    // ============================
-    // SAVE VIDEO (FIX QUAN TRỌNG)
-    // ============================
-
-    batch.set(videoRef, {
-
-      id: video.id,
-
-      url: videoUrl,
-
-      desc: video.description || "",
-
-      create_time: video.timestamp || null,
-
-      thumbnail: video.thumbnail || "",
-
-      uploader: username,
-
-      username: username,
-
-
-      // ⭐⭐⭐ FIX CHÍNH
-      last_view_count: video.view_count || 0,
-      last_like_count: video.like_count || 0,
-      last_comment_count: video.comment_count || 0,
-      last_repost_count: video.repost_count || 0,
-
-
-      last_updated: FieldValue.serverTimestamp()
-
-    }, { merge: true });
-
-    operationCount++;
-
-
-    // ============================
-    // SAVE HOURLY SNAPSHOT
-    // ============================
-
-    const snapshotRef = videoRef
-      .collection("daily")
-      .doc(dateKey)
-      .collection("hours")
-      .doc(hourKey);
-
-    batch.set(snapshotRef, {
-
-      view_count: video.view_count || 0,
-
-      like_count: video.like_count || 0,
-
-      comment_count: video.comment_count || 0,
-
-      repost_count: video.repost_count || 0,
-
-      timestamp: FieldValue.serverTimestamp()
-
-    });
-
-    operationCount++;
-
-
-    // ============================
-    // COMMIT BATCH
-    // ============================
-
-    if (operationCount >= 400) {
-
-      await batch.commit();
-
-      batch = db.batch();
-
-      operationCount = 0;
-
-    }
-
-  }
-
-
-  if (operationCount > 0) {
-
-    await batch.commit();
-
-  }
-
-  console.log("Saved videos for", username);
 
 }
-
 
 
 // ============================
@@ -226,7 +259,7 @@ async function scrapeUser(username) {
 
 async function runTracker() {
 
-  console.log("Tracker run:", getVietnamTime());
+  console.log("Tracker started:", getVietnamTime());
 
   const usersSnap = await db.collection("koc_users").get();
 
@@ -234,7 +267,7 @@ async function runTracker() {
 
     await scrapeUser(userDoc.id);
 
-    await sleep(3000);
+    await sleep(USER_DELAY);
 
   }
 
@@ -243,9 +276,8 @@ async function runTracker() {
 }
 
 
-
 // ============================
-// MANUAL TRIGGER API
+// API TRIGGER
 // ============================
 
 let isRunning = false;
@@ -265,7 +297,7 @@ app.get("/run-tracker", async (req, res) => {
 
     return res.json({
       success: false,
-      message: "Tracker already running"
+      message: "Already running"
     });
 
   }
@@ -277,17 +309,15 @@ app.get("/run-tracker", async (req, res) => {
     await runTracker();
 
     res.json({
-      success: true,
-      message: "Tracker completed"
+      success: true
     });
 
-  } catch (e) {
+  } catch (error) {
 
-    console.log(e);
+    console.log(error);
 
     res.status(500).json({
-      success: false,
-      message: "Tracker error"
+      success: false
     });
 
   }
