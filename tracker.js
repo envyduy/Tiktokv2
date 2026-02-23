@@ -14,6 +14,7 @@ admin.initializeApp({
 });
 
 const db = admin.firestore();
+const FieldValue = admin.firestore.FieldValue;
 
 const MAX_VIDEOS = 120;
 const PORT = process.env.PORT || 10000;
@@ -28,17 +29,34 @@ app.listen(PORT, () => {
   console.log("Server running on port", PORT);
 });
 
+
+// ============================
+// TIME
+// ============================
+
 function getVietnamTime() {
+
   return new Date(
     new Date().toLocaleString("en-US", {
       timeZone: "Asia/Ho_Chi_Minh"
     })
   );
+
 }
+
+
+// ============================
+// SLEEP
+// ============================
 
 function sleep(ms) {
   return new Promise(resolve => setTimeout(resolve, ms));
 }
+
+
+// ============================
+// SCRAPE USER
+// ============================
 
 async function scrapeUser(username) {
 
@@ -59,29 +77,25 @@ async function scrapeUser(username) {
 
   } catch (error) {
 
-    console.log("Scrape failed for", username);
-    console.log(error.message);
+    console.log("Scrape failed:", error.message);
     return;
 
   }
 
   if (!stdout) {
-    console.log("No data returned for", username);
+    console.log("No data returned");
     return;
   }
 
   const lines = stdout.trim().split("\n");
 
-  if (!lines.length) {
-    console.log("Empty video list for", username);
-    return;
-  }
-
   const now = getVietnamTime();
+
   const dateKey = now.toISOString().split("T")[0];
   const hourKey = now.getHours().toString();
 
-  const batch = db.batch();
+  let batch = db.batch();
+  let operationCount = 0;
 
   for (const line of lines) {
 
@@ -91,14 +105,16 @@ async function scrapeUser(username) {
 
     try {
       video = JSON.parse(line);
-    } catch (e) {
+    } catch {
       continue;
     }
 
     if (!video.id) continue;
 
-    // LINK VIDEO
-    const videoUrl = video.webpage_url || `https://www.tiktok.com/@${username}/video/${video.id}`;
+    const videoUrl =
+      video.webpage_url ||
+      `https://www.tiktok.com/@${username}/video/${video.id}`;
+
 
     const videoRef = db
       .collection("koc_users")
@@ -106,11 +122,12 @@ async function scrapeUser(username) {
       .collection("videos")
       .doc(video.id);
 
+
     batch.set(videoRef, {
 
       id: video.id,
 
-      url: videoUrl, // <-- thêm link video ở đây
+      url: videoUrl,
 
       desc: video.description || "",
 
@@ -122,15 +139,20 @@ async function scrapeUser(username) {
 
       username: username,
 
-      last_updated: now
+      last_updated: FieldValue.serverTimestamp()
 
     }, { merge: true });
+
+
+    operationCount++;
+
 
     const snapshotRef = videoRef
       .collection("daily")
       .doc(dateKey)
       .collection("hours")
       .doc(hourKey);
+
 
     batch.set(snapshotRef, {
 
@@ -142,17 +164,41 @@ async function scrapeUser(username) {
 
       repost_count: video.repost_count || 0,
 
-      timestamp: now
+      timestamp: FieldValue.serverTimestamp()
 
     });
 
+
+    operationCount++;
+
+
+    // tránh vượt limit batch
+    if (operationCount >= 400) {
+
+      await batch.commit();
+
+      batch = db.batch();
+
+      operationCount = 0;
+
+    }
+
   }
 
-  await batch.commit();
+  if (operationCount > 0) {
 
-  console.log("Saved", lines.length, "videos for", username);
+    await batch.commit();
+
+  }
+
+  console.log("Saved videos for", username);
 
 }
+
+
+// ============================
+// RUN TRACKER
+// ============================
 
 async function runTracker() {
 
@@ -164,34 +210,52 @@ async function runTracker() {
 
     await scrapeUser(userDoc.id);
 
-    await sleep(5000);
+    await sleep(3000);
 
   }
 
-  console.log("Tracker cycle done");
+  console.log("Tracker completed");
 
 }
 
-async function startTrackerLoop() {
 
-  while (true) {
+// ============================
+// MANUAL TRIGGER API
+// ============================
 
-    try {
+let isRunning = false;
 
-      await runTracker();
+app.get("/run-tracker", async (req, res) => {
 
-    } catch (e) {
+  if (isRunning) {
 
-      console.log("Tracker error:", e.message);
-
-    }
-
-    console.log("Sleep 1 hour");
-
-    await sleep(60 * 60 * 1000);
+    return res.json({
+      success: false,
+      message: "Tracker already running"
+    });
 
   }
 
-}
+  isRunning = true;
 
-startTrackerLoop();
+  try {
+
+    await runTracker();
+
+    res.json({
+      success: true
+    });
+
+  } catch (e) {
+
+    console.log(e);
+
+    res.status(500).json({
+      success: false
+    });
+
+  }
+
+  isRunning = false;
+
+});
