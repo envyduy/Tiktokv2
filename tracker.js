@@ -13,7 +13,7 @@ admin.initializeApp({
 
 const db = admin.firestore();
 
-const PYTHON_PATH = "python"; // Railway sẽ dùng python global
+const PYTHON_PATH = "python3"; // Railway sẽ dùng python global
 const MAX_VIDEOS = 120;
 
 
