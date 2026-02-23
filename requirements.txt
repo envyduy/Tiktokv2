@@ -1,1 +1,1 @@
-requirements
+yt-dlp
