@@ -18,6 +18,7 @@ const FieldValue = admin.firestore.FieldValue;
 
 const MAX_VIDEOS = 120;
 const PORT = process.env.PORT || 10000;
+const SECRET_KEY = process.env.SECRET_KEY; // dùng biến môi trường
 
 const app = express();
 
@@ -35,13 +36,11 @@ app.listen(PORT, () => {
 // ============================
 
 function getVietnamTime() {
-
   return new Date(
     new Date().toLocaleString("en-US", {
       timeZone: "Asia/Ho_Chi_Minh"
     })
   );
-
 }
 
 
@@ -82,15 +81,11 @@ async function scrapeUser(username) {
 
   }
 
-  if (!stdout) {
-    console.log("No data returned");
-    return;
-  }
+  if (!stdout) return;
 
   const lines = stdout.trim().split("\n");
 
   const now = getVietnamTime();
-
   const dateKey = now.toISOString().split("T")[0];
   const hourKey = now.getHours().toString();
 
@@ -115,37 +110,24 @@ async function scrapeUser(username) {
       video.webpage_url ||
       `https://www.tiktok.com/@${username}/video/${video.id}`;
 
-
     const videoRef = db
       .collection("koc_users")
       .doc(username)
       .collection("videos")
       .doc(video.id);
 
-
     batch.set(videoRef, {
-
       id: video.id,
-
       url: videoUrl,
-
       desc: video.description || "",
-
       create_time: video.timestamp || null,
-
       thumbnail: video.thumbnail || "",
-
       uploader: username,
-
       username: username,
-
       last_updated: FieldValue.serverTimestamp()
-
     }, { merge: true });
 
-
     operationCount++;
-
 
     const snapshotRef = videoRef
       .collection("daily")
@@ -153,42 +135,26 @@ async function scrapeUser(username) {
       .collection("hours")
       .doc(hourKey);
 
-
     batch.set(snapshotRef, {
-
       view_count: video.view_count || 0,
-
       like_count: video.like_count || 0,
-
       comment_count: video.comment_count || 0,
-
       repost_count: video.repost_count || 0,
-
       timestamp: FieldValue.serverTimestamp()
-
     });
-
 
     operationCount++;
 
-
-    // tránh vượt limit batch
     if (operationCount >= 400) {
-
       await batch.commit();
-
       batch = db.batch();
-
       operationCount = 0;
-
     }
 
   }
 
   if (operationCount > 0) {
-
     await batch.commit();
-
   }
 
   console.log("Saved videos for", username);
@@ -227,13 +193,20 @@ let isRunning = false;
 
 app.get("/run-tracker", async (req, res) => {
 
-  if (isRunning) {
+  // 🔐 check key
+  if (req.query.key !== SECRET_KEY) {
+    return res.status(403).json({
+      success: false,
+      message: "Unauthorized"
+    });
+  }
 
+  // 🚫 chống spam
+  if (isRunning) {
     return res.json({
       success: false,
       message: "Tracker already running"
     });
-
   }
 
   isRunning = true;
@@ -243,7 +216,8 @@ app.get("/run-tracker", async (req, res) => {
     await runTracker();
 
     res.json({
-      success: true
+      success: true,
+      message: "Tracker completed"
     });
 
   } catch (e) {
@@ -251,7 +225,8 @@ app.get("/run-tracker", async (req, res) => {
     console.log(e);
 
     res.status(500).json({
-      success: false
+      success: false,
+      message: "Tracker error"
     });
 
   }
