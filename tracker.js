@@ -27,7 +27,7 @@ const db = admin.firestore();
 // CONFIG
 // ======================================
 
-const PYTHON_PATH = "python3";
+const PYTHON_PATH = "python";
 const MAX_VIDEOS = 120;
 
 
