@@ -50,10 +50,10 @@ async function scrapeUser(username) {
 
   try {
 
-    const result = await execPromise(
-      `yt-dlp --impersonate chrome --playlist-end ${MAX_VIDEOS} --dump-json ${profileUrl}`,
-      { maxBuffer: 1024 * 1024 * 200 }
-    );
+   const result = await execPromise(
+  `yt-dlp --playlist-end ${MAX_VIDEOS} --dump-json ${profileUrl}`,
+  { maxBuffer: 1024 * 1024 * 200 }
+);
 
     stdout = result.stdout;
 
