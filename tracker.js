@@ -5,6 +5,10 @@ const express = require("express");
 
 const execPromise = util.promisify(exec);
 
+// ======================================
+// FIREBASE INIT
+// ======================================
+
 const serviceAccount = JSON.parse(
   process.env.FIREBASE_SERVICE_ACCOUNT
 );
@@ -15,9 +19,18 @@ admin.initializeApp({
 
 const db = admin.firestore();
 
-const PYTHON_PATH = "python";
+// ======================================
+// CONFIG
+// ======================================
+
+const PYTHON_PATH = "python3";
 const MAX_VIDEOS = 120;
 const PORT = process.env.PORT || 10000;
+const TRACK_INTERVAL = 60 * 60 * 1000; // 1 hour
+
+// ======================================
+// EXPRESS SERVER (KEEP RENDER ALIVE)
+// ======================================
 
 const app = express();
 
@@ -28,7 +41,6 @@ app.get("/", (req, res) => {
 app.listen(PORT, () => {
   console.log("Server running on port", PORT);
 });
-
 
 // ======================================
 // TIME
@@ -42,7 +54,6 @@ function getVietnamTime() {
   );
 }
 
-
 // ======================================
 // SCRAPE USER
 // ======================================
@@ -53,10 +64,27 @@ async function scrapeUser(username) {
 
   try {
 
-    const { stdout } = await execPromise(
-      `${PYTHON_PATH} -m yt_dlp --playlist-end ${MAX_VIDEOS} --dump-json https://www.tiktok.com/@${username}`,
-      { maxBuffer: 1024 * 1024 * 200 }
-    );
+    const command =
+      `${PYTHON_PATH} -m yt_dlp ` +
+      `--playlist-end ${MAX_VIDEOS} ` +
+      `--dump-json ` +
+      `--ignore-errors ` +
+      `--no-warnings ` +
+      `--impersonate chrome ` +
+      `https://www.tiktok.com/@${username}`;
+
+    const { stdout, stderr } = await execPromise(command, {
+      maxBuffer: 1024 * 1024 * 200
+    });
+
+    if (stderr) {
+      console.log("yt-dlp stderr:", stderr);
+    }
+
+    if (!stdout) {
+      console.log("No videos found");
+      return;
+    }
 
     const lines = stdout.trim().split("\n");
 
@@ -66,6 +94,8 @@ async function scrapeUser(username) {
     const hourKey = now.getHours().toString();
 
     const batch = db.batch();
+
+    let count = 0;
 
     for (const line of lines) {
 
@@ -98,21 +128,24 @@ async function scrapeUser(username) {
         timestamp: now
       });
 
+      count++;
     }
 
     await batch.commit();
 
-    console.log(`✓ Saved ${lines.length} videos for ${username}`);
+    console.log(`Saved ${count} videos for ${username}`);
 
   }
   catch (err) {
 
-    console.log("Scrape error:", err.message);
+    console.log("SCRAPE ERROR:", err.message);
+
+    if (err.stderr)
+      console.log("stderr:", err.stderr);
 
   }
 
 }
-
 
 // ======================================
 // TRACKER
@@ -123,32 +156,35 @@ let isRunning = false;
 async function runTracker() {
 
   if (isRunning) {
-    console.log("Tracker already running, skip...");
+    console.log("Tracker already running, skip");
     return;
   }
 
   isRunning = true;
 
-  console.log("\n=== Tracker run:", getVietnamTime(), "===\n");
+  console.log("\n=== TRACKER START:", getVietnamTime(), "===\n");
 
   try {
 
     const usersSnap = await db.collection("koc_users").get();
 
-    console.log(`Found ${usersSnap.size} users`);
+    console.log("Total users:", usersSnap.size);
 
     for (const userDoc of usersSnap.docs) {
 
       await scrapeUser(userDoc.id);
 
+      // delay tránh bị block
+      await new Promise(r => setTimeout(r, 5000));
+
     }
 
-    console.log("\n=== Tracker cycle done ===\n");
+    console.log("\n=== TRACKER DONE ===\n");
 
   }
   catch (err) {
 
-    console.log("Tracker error:", err.message);
+    console.log("TRACKER ERROR:", err);
 
   }
 
@@ -156,21 +192,22 @@ async function runTracker() {
 
 }
 
-
 // ======================================
-// START TRACKER (NO SLEEP)
+// LOOP (RENDER SAFE)
 // ======================================
 
-function startTracker() {
+function trackerLoop() {
 
-  console.log("Tracker started");
-
-  // run immediately
   runTracker();
 
-  // run every 1 hour
-  setInterval(runTracker, 60 * 60 * 1000);
+  setTimeout(trackerLoop, TRACK_INTERVAL);
 
 }
 
-startTracker();
+// ======================================
+// START
+// ======================================
+
+console.log("Tracker started");
+
+trackerLoop();
