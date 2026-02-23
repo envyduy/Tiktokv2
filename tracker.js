@@ -15,7 +15,6 @@ admin.initializeApp({
 
 const db = admin.firestore();
 
-const PYTHON_PATH = "python";
 const MAX_VIDEOS = 120;
 const PORT = process.env.PORT || 10000;
 
@@ -45,15 +44,40 @@ async function scrapeUser(username) {
 
   console.log("Scraping:", username);
 
-  const { stdout } = await execPromise(
-    `${PYTHON_PATH} -m yt_dlp --playlist-end ${MAX_VIDEOS} --dump-json https://www.tiktok.com/@${username}`,
-    { maxBuffer: 1024 * 1024 * 200 }
-  );
+  const profileUrl = `https://www.tiktok.com/@${username}`;
+
+  let stdout;
+
+  try {
+
+    const result = await execPromise(
+      `yt-dlp --impersonate chrome --playlist-end ${MAX_VIDEOS} --dump-json ${profileUrl}`,
+      { maxBuffer: 1024 * 1024 * 200 }
+    );
+
+    stdout = result.stdout;
+
+  } catch (error) {
+
+    console.log("Scrape failed for", username);
+    console.log(error.message);
+    return;
+
+  }
+
+  if (!stdout) {
+    console.log("No data returned for", username);
+    return;
+  }
 
   const lines = stdout.trim().split("\n");
 
-  const now = getVietnamTime();
+  if (!lines.length) {
+    console.log("Empty video list for", username);
+    return;
+  }
 
+  const now = getVietnamTime();
   const dateKey = now.toISOString().split("T")[0];
   const hourKey = now.getHours().toString();
 
@@ -63,7 +87,15 @@ async function scrapeUser(username) {
 
     if (!line) continue;
 
-    const video = JSON.parse(line);
+    let video;
+
+    try {
+      video = JSON.parse(line);
+    } catch (e) {
+      continue;
+    }
+
+    if (!video.id) continue;
 
     const videoRef = db
       .collection("koc_users")
@@ -76,7 +108,8 @@ async function scrapeUser(username) {
       desc: video.description || "",
       create_time: video.timestamp || null,
       thumbnail: video.thumbnail || "",
-      uploader: username
+      uploader: username,
+      last_updated: now
     }, { merge: true });
 
     const snapshotRef = videoRef
@@ -94,7 +127,7 @@ async function scrapeUser(username) {
 
   await batch.commit();
 
-  console.log("Saved", lines.length);
+  console.log("Saved", lines.length, "videos for", username);
 
 }
 
@@ -108,7 +141,7 @@ async function runTracker() {
 
     await scrapeUser(userDoc.id);
 
-    await sleep(5000);
+    await sleep(5000); // chống block
 
   }
 
@@ -124,8 +157,7 @@ async function startTrackerLoop() {
 
       await runTracker();
 
-    }
-    catch (e) {
+    } catch (e) {
 
       console.log("Tracker error:", e.message);
 
