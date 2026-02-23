@@ -29,6 +29,11 @@ app.listen(PORT, () => {
   console.log("Server running on port", PORT);
 });
 
+
+// ======================================
+// TIME
+// ======================================
+
 function getVietnamTime() {
   return new Date(
     new Date().toLocaleString("en-US", {
@@ -37,97 +42,135 @@ function getVietnamTime() {
   );
 }
 
-function sleep(ms) {
-  return new Promise(resolve => setTimeout(resolve, ms));
-}
+
+// ======================================
+// SCRAPE USER
+// ======================================
 
 async function scrapeUser(username) {
 
   console.log("Scraping:", username);
 
-  const { stdout } = await execPromise(
-    `${PYTHON_PATH} -m yt_dlp --playlist-end ${MAX_VIDEOS} --dump-json https://www.tiktok.com/@${username}`,
-    { maxBuffer: 1024 * 1024 * 200 }
-  );
+  try {
 
-  const lines = stdout.trim().split("\n");
+    const { stdout } = await execPromise(
+      `${PYTHON_PATH} -m yt_dlp --playlist-end ${MAX_VIDEOS} --dump-json https://www.tiktok.com/@${username}`,
+      { maxBuffer: 1024 * 1024 * 200 }
+    );
 
-  const now = getVietnamTime();
+    const lines = stdout.trim().split("\n");
 
-  const dateKey = now.toISOString().split("T")[0];
-  const hourKey = now.getHours().toString();
+    const now = getVietnamTime();
 
-  const batch = db.batch();
+    const dateKey = now.toISOString().split("T")[0];
+    const hourKey = now.getHours().toString();
 
-  for (const line of lines) {
+    const batch = db.batch();
 
-    if (!line) continue;
+    for (const line of lines) {
 
-    const video = JSON.parse(line);
+      if (!line) continue;
 
-    const videoRef = db
-      .collection("koc_users")
-      .doc(username)
-      .collection("videos")
-      .doc(video.id);
+      const video = JSON.parse(line);
 
-    batch.set(videoRef, {
-      id: video.id,
-      desc: video.description || "",
-      create_time: video.timestamp || null,
-      thumbnail: video.thumbnail || "",
-      uploader: username
-    }, { merge: true });
+      const videoRef = db
+        .collection("koc_users")
+        .doc(username)
+        .collection("videos")
+        .doc(video.id);
 
-    const snapshotRef = videoRef
-      .collection("daily")
-      .doc(dateKey)
-      .collection("hours")
-      .doc(hourKey);
+      batch.set(videoRef, {
+        id: video.id,
+        desc: video.description || "",
+        create_time: video.timestamp || null,
+        thumbnail: video.thumbnail || "",
+        uploader: username
+      }, { merge: true });
 
-    batch.set(snapshotRef, {
-      view_count: video.view_count || 0,
-      timestamp: now
-    });
+      const snapshotRef = videoRef
+        .collection("daily")
+        .doc(dateKey)
+        .collection("hours")
+        .doc(hourKey);
+
+      batch.set(snapshotRef, {
+        view_count: video.view_count || 0,
+        timestamp: now
+      });
+
+    }
+
+    await batch.commit();
+
+    console.log(`✓ Saved ${lines.length} videos for ${username}`);
+
+  }
+  catch (err) {
+
+    console.log("Scrape error:", err.message);
 
   }
 
-  await batch.commit();
-
-  console.log("Saved", lines.length);
 }
+
+
+// ======================================
+// TRACKER
+// ======================================
+
+let isRunning = false;
 
 async function runTracker() {
 
-  console.log("Tracker run:", getVietnamTime());
-
-  const usersSnap = await db.collection("koc_users").get();
-
-  for (const userDoc of usersSnap.docs) {
-
-    await scrapeUser(userDoc.id);
-
-    await sleep(5000);
+  if (isRunning) {
+    console.log("Tracker already running, skip...");
+    return;
   }
 
-  console.log("Tracker cycle done");
-}
+  isRunning = true;
 
-async function startTrackerLoop() {
+  console.log("\n=== Tracker run:", getVietnamTime(), "===\n");
 
-  while (true) {
+  try {
 
-    try {
-      await runTracker();
+    const usersSnap = await db.collection("koc_users").get();
+
+    console.log(`Found ${usersSnap.size} users`);
+
+    for (const userDoc of usersSnap.docs) {
+
+      await scrapeUser(userDoc.id);
+
     }
-    catch (e) {
-      console.log("Tracker error:", e.message);
-    }
 
-    console.log("Sleep 1 hour");
+    console.log("\n=== Tracker cycle done ===\n");
 
-    await sleep(60 * 60 * 1000);
   }
+  catch (err) {
+
+    console.log("Tracker error:", err.message);
+
+  }
+
+  isRunning = false;
+
 }
 
-startTrackerLoop();
+
+// ======================================
+// START TRACKER (NO SLEEP)
+// ======================================
+
+function startTracker() {
+
+  console.log("Tracker started");
+
+  // run immediately
+  runTracker();
+
+  // run every 1 hour
+  setInterval(runTracker, 60 * 60 * 1000);
+
+}
+
+startTracker();
