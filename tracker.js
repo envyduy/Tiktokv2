@@ -7,18 +7,19 @@ const execPromise = util.promisify(exec);
 const serviceAccount = JSON.parse(
   process.env.FIREBASE_SERVICE_ACCOUNT
 );
+
 admin.initializeApp({
   credential: admin.credential.cert(serviceAccount)
 });
 
 const db = admin.firestore();
 
-const PYTHON_PATH = "python3"; // Railway sẽ dùng python global
+const PYTHON_PATH = "python";
 const MAX_VIDEOS = 120;
 
 
 // ======================================
-// GET VIETNAM TIME
+// TIME
 // ======================================
 
 function getVietnamTime() {
@@ -30,11 +31,6 @@ function getVietnamTime() {
   );
 
 }
-
-
-// ======================================
-// SLEEP FUNCTION
-// ======================================
 
 function sleep(ms) {
 
@@ -51,22 +47,23 @@ async function scrapeUser(username) {
 
   try {
 
-    console.log(`\nScraping: ${username}`);
+    console.log(`\nScraping ${username}`);
 
     const { stdout } = await execPromise(
       `${PYTHON_PATH} -m yt_dlp --playlist-end ${MAX_VIDEOS} --dump-json https://www.tiktok.com/@${username}`,
       { maxBuffer: 1024 * 1024 * 200 }
     );
 
-    const lines = stdout.trim().split("\n");
+    const lines = stdout.split("\n");
 
     const now = getVietnamTime();
 
     const dateKey = now.toISOString().split("T")[0];
-
     const hourKey = now.getHours().toString();
 
     const batch = db.batch();
+
+    let count = 0;
 
     for (const line of lines) {
 
@@ -80,32 +77,26 @@ async function scrapeUser(username) {
         .collection("videos")
         .doc(video.id);
 
-
-      const thumbnail =
-        video.thumbnail ||
-        (video.thumbnails && video.thumbnails.length > 0
-          ? video.thumbnails[video.thumbnails.length - 1].url
-          : `https://p16-sign.tiktokcdn.com/obj/tos-maliva-p-0068/${video.id}.jpeg`);
-
-
-      batch.set(videoRef, {
-
-        id: video.id,
-        desc: video.description || "",
-        create_time: video.timestamp || null,
-        thumbnail: thumbnail,
-        url: video.webpage_url || `https://www.tiktok.com/@${username}/video/${video.id}`,
-        uploader: username
-
-      }, { merge: true });
-
-
       const snapshotRef = videoRef
         .collection("daily")
         .doc(dateKey)
         .collection("hours")
         .doc(hourKey);
 
+      const thumbnail =
+        video.thumbnail ||
+        `https://p16-sign.tiktokcdn.com/obj/tos-maliva-p-0068/${video.id}.jpeg`;
+
+      batch.set(videoRef, {
+
+        id: video.id,
+        desc: video.description || "",
+        create_time: video.timestamp || null,
+        thumbnail,
+        url: video.webpage_url,
+        uploader: username
+
+      }, { merge: true });
 
       batch.set(snapshotRef, {
 
@@ -116,16 +107,18 @@ async function scrapeUser(username) {
 
       });
 
+      count++;
+
     }
 
     await batch.commit();
 
-    console.log(`Saved ${lines.length} videos snapshot`);
+    console.log(`Saved ${count} videos`);
 
   }
   catch (err) {
 
-    console.error(`Scrape error (${username}):`, err.message);
+    console.error(`Scrape error ${username}:`, err.message);
 
   }
 
@@ -133,7 +126,7 @@ async function scrapeUser(username) {
 
 
 // ======================================
-// ANALYZE GROWTH
+// ANALYZE TOP GROWTH TODAY
 // ======================================
 
 async function analyzeUser(username) {
@@ -156,31 +149,31 @@ async function analyzeUser(username) {
         .collection("daily")
         .doc(today)
         .collection("hours")
-        .orderBy("timestamp", "desc")
-        .limit(2)
+        .orderBy("timestamp")
         .get();
 
       if (hoursSnap.size < 2) continue;
 
-      const latest = hoursSnap.docs[0].data();
-
-      const previous = hoursSnap.docs[1].data();
+      const first = hoursSnap.docs[0].data();
+      const last = hoursSnap.docs[hoursSnap.size - 1].data();
 
       growth.push({
 
         videoId: videoDoc.id,
-        delta: latest.view_count - previous.view_count
+        growth: last.view_count - first.view_count
 
       });
 
     }
 
-    growth.sort((a, b) => b.delta - a.delta);
+    growth.sort((a,b)=>b.growth-a.growth);
 
-    console.log(`Top growth (${username}):`, growth.slice(0, 3));
+    console.log(`\nTop 10 growth ${username}`);
+
+    console.table(growth.slice(0,10));
 
   }
-  catch (err) {
+  catch(err){
 
     console.error("Analyze error:", err.message);
 
@@ -190,30 +183,29 @@ async function analyzeUser(username) {
 
 
 // ======================================
-// RUN TRACKER
+// TRACK ALL USERS
 // ======================================
 
 async function runTracker() {
 
-  try {
+  console.log("\n======================");
+  console.log("Tracker:", getVietnamTime());
+  console.log("======================");
 
-    console.log("\n===============================");
-    console.log("Tracker running:", getVietnamTime());
-    console.log("===============================\n");
+  const usersSnap = await db.collection("koc_users").get();
 
-    const usersSnap = await db.collection("koc_users").get();
+  if (usersSnap.empty){
 
-    if (usersSnap.empty) {
+    console.log("No users");
+    return;
 
-      console.log("No users found");
+  }
 
-      return;
+  for (const userDoc of usersSnap.docs){
 
-    }
+    const username = userDoc.id;
 
-    for (const userDoc of usersSnap.docs) {
-
-      const username = userDoc.id;
+    try{
 
       await scrapeUser(username);
 
@@ -222,59 +214,43 @@ async function runTracker() {
       await db.collection("koc_users")
         .doc(username)
         .update({
-
           last_scraped: getVietnamTime()
-
         });
 
-      await sleep(3000); // tránh spam
+    }
+    catch(err){
+
+      console.error("User failed:", username);
 
     }
 
-    console.log("\nTracker cycle finished\n");
+    await sleep(5000);
 
   }
-  catch (err) {
 
-    console.error("Tracker error:", err.message);
-
-  }
+  console.log("\nCycle complete");
 
 }
 
 
 // ======================================
-// INFINITE LOOP SCHEDULER
+// INFINITE LOOP
 // ======================================
 
-async function startInfiniteTracker() {
+async function start(){
 
-  console.log("Infinite tracker started\n");
+  console.log("Tracker started");
 
-  while (true) {
+  while(true){
 
-    try {
-
-      await runTracker();
-
-    }
-    catch (err) {
-
-      console.error("Loop error:", err.message);
-
-    }
+    await runTracker();
 
     console.log("Sleeping 1 hour...\n");
 
-    await sleep(60 * 60 * 1000);
+    await sleep(60*60*1000);
 
   }
 
 }
 
-
-// ======================================
-// START APP
-// ======================================
-
-startInfiniteTracker();
+start();
