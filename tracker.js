@@ -20,6 +20,8 @@ admin.initializeApp({
 const db = admin.firestore();
 const FieldValue = admin.firestore.FieldValue;
 
+// ✅ FIX 1 + 3: CACHE
+let videoCache = {};
 
 // ============================
 // CONFIG
@@ -43,7 +45,6 @@ app.listen(PORT, () => {
   console.log("Server running on port", PORT);
 });
 
-
 // ============================
 // TIME
 // ============================
@@ -56,7 +57,6 @@ function getVietnamTime() {
   );
 }
 
-
 // ============================
 // SLEEP
 // ============================
@@ -64,7 +64,6 @@ function getVietnamTime() {
 function sleep(ms) {
   return new Promise(resolve => setTimeout(resolve, ms));
 }
-
 
 // ============================
 // EXEC WITH TIMEOUT + RETRY
@@ -112,9 +111,8 @@ async function execYtDlp(profileUrl, retry = RETRY_COUNT) {
 
 }
 
-
 // ============================
-// SCRAPE USER
+// SCRAPE USER (ĐÃ FIX)
 // ============================
 
 async function scrapeUser(username) {
@@ -128,17 +126,13 @@ async function scrapeUser(username) {
     const stdout = await execYtDlp(profileUrl);
 
     if (!stdout) {
-
       console.log("No data:", username);
-
       return;
-
     }
 
     const lines = stdout.trim().split("\n");
 
     const now = getVietnamTime();
-
     const dateKey = now.toISOString().split("T")[0];
     const hourKey = now.getHours().toString().padStart(2, "0");
 
@@ -169,71 +163,91 @@ async function scrapeUser(username) {
         .collection("videos")
         .doc(video.id);
 
+      const key = `${username}_${video.id}`;
 
-      // SAVE VIDEO
+      const currentData = {
+        view: video.view_count || 0,
+        like: video.like_count || 0,
+        comment: video.comment_count || 0,
+        repost: video.repost_count || 0
+      };
 
-      batch.set(videoRef, {
+      const old = videoCache[key];
 
-        id: video.id,
+      // ============================
+      // FIX 1: CHỈ GHI KHI THAY ĐỔI
+      // ============================
 
-        url: videoUrl,
+      let changed = true;
 
-        desc: video.description || "",
+      if (
+        old &&
+        old.view === currentData.view &&
+        old.like === currentData.like &&
+        old.comment === currentData.comment &&
+        old.repost === currentData.repost
+      ) {
+        changed = false;
+      }
 
-        create_time: video.timestamp || null,
+      if (changed) {
 
-        thumbnail: video.thumbnail || "",
+        batch.set(videoRef, {
 
-        username: username,
+          id: video.id,
+          url: videoUrl,
+          desc: video.description || "",
+          create_time: video.timestamp || null,
+          thumbnail: video.thumbnail || "",
+          username: username,
 
-        last_view_count: video.view_count || 0,
+          last_view_count: currentData.view,
+          last_like_count: currentData.like,
+          last_comment_count: currentData.comment,
+          last_repost_count: currentData.repost,
 
-        last_like_count: video.like_count || 0,
+          last_updated: FieldValue.serverTimestamp()
 
-        last_comment_count: video.comment_count || 0,
+        }, { merge: true });
 
-        last_repost_count: video.repost_count || 0,
+        operationCount++;
+      }
 
-        last_updated: FieldValue.serverTimestamp()
+      // ============================
+      // FIX 3: SNAPSHOT 1 LẦN / GIỜ
+      // ============================
 
-      }, { merge: true });
+      if (!old || old.hour !== hourKey) {
 
-      operationCount++;
+        const snapshotRef = videoRef
+          .collection("daily")
+          .doc(dateKey)
+          .collection("hours")
+          .doc(hourKey);
 
+        batch.set(snapshotRef, {
 
-      // SAVE HOURLY SNAPSHOT
+          view_count: currentData.view,
+          like_count: currentData.like,
+          comment_count: currentData.comment,
+          repost_count: currentData.repost,
+          timestamp: FieldValue.serverTimestamp()
 
-      const snapshotRef = videoRef
-        .collection("daily")
-        .doc(dateKey)
-        .collection("hours")
-        .doc(hourKey);
+        });
 
-      batch.set(snapshotRef, {
+        operationCount++;
+      }
 
-        view_count: video.view_count || 0,
-
-        like_count: video.like_count || 0,
-
-        comment_count: video.comment_count || 0,
-
-        repost_count: video.repost_count || 0,
-
-        timestamp: FieldValue.serverTimestamp()
-
-      });
-
-      operationCount++;
-
+      // UPDATE CACHE
+      videoCache[key] = {
+        ...currentData,
+        hour: hourKey
+      };
 
       if (operationCount >= 400) {
-
         await batch.commit();
-
         batch = db.batch();
-
         operationCount = 0;
-
       }
 
     }
@@ -245,13 +259,10 @@ async function scrapeUser(username) {
     console.log("SUCCESS:", username);
 
   } catch (error) {
-
     console.log("Scrape error:", username, error.message);
-
   }
 
 }
-
 
 // ============================
 // RUN TRACKER
@@ -275,7 +286,6 @@ async function runTracker() {
 
 }
 
-
 // ============================
 // API TRIGGER
 // ============================
@@ -285,21 +295,17 @@ let isRunning = false;
 app.get("/run-tracker", async (req, res) => {
 
   if (req.query.key !== SECRET_KEY) {
-
     return res.status(403).json({
       success: false,
       message: "Unauthorized"
     });
-
   }
 
   if (isRunning) {
-
     return res.json({
       success: false,
       message: "Already running"
     });
-
   }
 
   isRunning = true;
