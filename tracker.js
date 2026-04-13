@@ -20,7 +20,7 @@ admin.initializeApp({
 const db = admin.firestore();
 const FieldValue = admin.firestore.FieldValue;
 
-// ✅ FIX 1 + 3: CACHE
+// ✅ CACHE
 let videoCache = {};
 
 // ============================
@@ -70,9 +70,7 @@ function sleep(ms) {
 // ============================
 
 async function execYtDlp(profileUrl, retry = RETRY_COUNT) {
-
   try {
-
     console.log("Running yt-dlp:", profileUrl);
 
     const result = await execPromise(
@@ -88,41 +86,29 @@ async function execYtDlp(profileUrl, retry = RETRY_COUNT) {
     }
 
     return result.stdout;
-
   } catch (error) {
-
     console.log("yt-dlp error:", error.message);
 
     if (retry > 0) {
-
       console.log("Retrying in", RETRY_DELAY / 1000, "seconds...");
-
       await sleep(RETRY_DELAY);
-
       return execYtDlp(profileUrl, retry - 1);
-
     }
 
     console.log("yt-dlp failed completely");
-
     return null;
-
   }
-
 }
 
 // ============================
-// SCRAPE USER (ĐÃ FIX)
+// SCRAPE USER (ĐÃ FIX - GOM 24 GIỜ VÀO 1 DOCUMENT)
 // ============================
 
 async function scrapeUser(username) {
-
   try {
-
     console.log("Scraping:", username);
 
     const profileUrl = `https://www.tiktok.com/@${username}`;
-
     const stdout = await execYtDlp(profileUrl);
 
     if (!stdout) {
@@ -140,11 +126,9 @@ async function scrapeUser(username) {
     let operationCount = 0;
 
     for (const line of lines) {
-
       if (!line) continue;
 
       let video;
-
       try {
         video = JSON.parse(line);
       } catch {
@@ -177,7 +161,6 @@ async function scrapeUser(username) {
       // ============================
       // FIX 1: CHỈ GHI KHI THAY ĐỔI
       // ============================
-
       let changed = true;
 
       if (
@@ -191,9 +174,7 @@ async function scrapeUser(username) {
       }
 
       if (changed) {
-
         batch.set(videoRef, {
-
           id: video.id,
           url: videoUrl,
           desc: video.description || "",
@@ -207,36 +188,32 @@ async function scrapeUser(username) {
           last_repost_count: currentData.repost,
 
           last_updated: FieldValue.serverTimestamp()
-
         }, { merge: true });
 
         operationCount++;
       }
 
       // ============================
-      // FIX 3: SNAPSHOT 1 LẦN / GIỜ
+      // FIX MỚI: GOM TẤT CẢ GIỜ VÀO 1 DOCUMENT DAILY
       // ============================
-
-      if (!old || old.hour !== hourKey) {
-
-        const snapshotRef = videoRef
-          .collection("daily")
-          .doc(dateKey)
-          .collection("hours")
-          .doc(hourKey);
-
-        batch.set(snapshotRef, {
-
+      // Thay vì tạo subcollection hours với 24 documents riêng lẻ
+      // Ta lưu tất cả vào 1 document daily duy nhất, dùng object hours
+      
+      const dailyRef = videoRef.collection("daily").doc(dateKey);
+      
+      // Dùng set với merge để cập nhật hoặc tạo mới
+      batch.set(dailyRef, {
+        [`hours.${hourKey}`]: {
           view_count: currentData.view,
           like_count: currentData.like,
           comment_count: currentData.comment,
           repost_count: currentData.repost,
           timestamp: FieldValue.serverTimestamp()
-
-        });
-
-        operationCount++;
-      }
+        },
+        last_updated: FieldValue.serverTimestamp()
+      }, { merge: true });
+      
+      operationCount++;
 
       // UPDATE CACHE
       videoCache[key] = {
@@ -249,7 +226,6 @@ async function scrapeUser(username) {
         batch = db.batch();
         operationCount = 0;
       }
-
     }
 
     if (operationCount > 0) {
@@ -257,11 +233,9 @@ async function scrapeUser(username) {
     }
 
     console.log("SUCCESS:", username);
-
   } catch (error) {
     console.log("Scrape error:", username, error.message);
   }
-
 }
 
 // ============================
@@ -269,21 +243,16 @@ async function scrapeUser(username) {
 // ============================
 
 async function runTracker() {
-
   console.log("Tracker started:", getVietnamTime());
 
   const usersSnap = await db.collection("koc_users").get();
 
   for (const userDoc of usersSnap.docs) {
-
     await scrapeUser(userDoc.id);
-
     await sleep(USER_DELAY);
-
   }
 
   console.log("Tracker completed");
-
 }
 
 // ============================
@@ -293,7 +262,6 @@ async function runTracker() {
 let isRunning = false;
 
 app.get("/run-tracker", async (req, res) => {
-
   if (req.query.key !== SECRET_KEY) {
     return res.status(403).json({
       success: false,
@@ -311,23 +279,12 @@ app.get("/run-tracker", async (req, res) => {
   isRunning = true;
 
   try {
-
     await runTracker();
-
-    res.json({
-      success: true
-    });
-
+    res.json({ success: true });
   } catch (error) {
-
     console.log(error);
-
-    res.status(500).json({
-      success: false
-    });
-
+    res.status(500).json({ success: false });
   }
 
   isRunning = false;
-
 });
