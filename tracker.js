@@ -101,7 +101,7 @@ async function execYtDlp(profileUrl, retry = RETRY_COUNT) {
 }
 
 // ============================
-// SCRAPE USER (ĐÃ FIX - GOM 24 GIỜ VÀO 1 DOCUMENT)
+// SCRAPE USER (GOM 24 GIỜ VÀO 1 DOCUMENT)
 // ============================
 
 async function scrapeUser(username) {
@@ -158,9 +158,7 @@ async function scrapeUser(username) {
 
       const old = videoCache[key];
 
-      // ============================
-      // FIX 1: CHỈ GHI KHI THAY ĐỔI
-      // ============================
+      // CHỈ GHI KHI THAY ĐỔI
       let changed = true;
 
       if (
@@ -193,15 +191,9 @@ async function scrapeUser(username) {
         operationCount++;
       }
 
-      // ============================
-      // FIX MỚI: GOM TẤT CẢ GIỜ VÀO 1 DOCUMENT DAILY
-      // ============================
-      // Thay vì tạo subcollection hours với 24 documents riêng lẻ
-      // Ta lưu tất cả vào 1 document daily duy nhất, dùng object hours
-      
+      // ===== GOM TẤT CẢ GIỜ VÀO 1 DOCUMENT DAILY =====
       const dailyRef = videoRef.collection("daily").doc(dateKey);
       
-      // Dùng set với merge để cập nhật hoặc tạo mới
       batch.set(dailyRef, {
         [`hours.${hourKey}`]: {
           view_count: currentData.view,
